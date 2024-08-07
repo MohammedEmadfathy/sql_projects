@@ -1,0 +1,258 @@
+#Question 1: Orders Placed by Each Agent
+SELECT v.AGENT_ID, 
+    COUNT(DISTINCT o.ORDER_ID) AS Total_Orders
+FROM 
+    `visits-1` v
+JOIN 
+    `orders-1` o ON v.RETAILER_ID = o.RETAILER_ID
+WHERE 
+    DATE(v.CREATED_AT) = DATE(o.CREATED_AT)
+GROUP BY 
+    v.AGENT_ID;
+
+
+#Question 2: Strike Rate Per Agent
+WITH OrdersPerAgent AS (
+    SELECT 
+        v.AGENT_ID, 
+        COUNT(DISTINCT o.ORDER_ID) AS Total_Orders
+    FROM 
+        `visits-1` v
+    JOIN 
+        `orders-1` o ON v.RETAILER_ID = o.RETAILER_ID
+    WHERE 
+        DATE(v.CREATED_AT) = DATE(o.CREATED_AT)
+    GROUP BY 
+        v.AGENT_ID
+),
+VisitsPerAgent AS (
+    SELECT 
+        AGENT_ID, 
+        COUNT(VISIT_ID) AS Total_Visits
+    FROM 
+        `visits-1`
+    GROUP BY 
+        AGENT_ID )
+SELECT 
+    v.AGENT_ID, 
+    o.Total_Orders, 
+    v.Total_Visits, 
+    (o.Total_Orders / v.Total_Visits) AS Strike_Rate
+FROM 
+    VisitsPerAgent v
+LEFT JOIN 
+    OrdersPerAgent o ON v.AGENT_ID = o.AGENT_ID;
+#Question 3: Average Ticket Size Per Agent
+SELECT 
+    v.AGENT_ID, 
+    AVG(o.NMV) AS Average_Ticket_Size
+FROM 
+    `visits-1` v
+JOIN 
+    `orders-1` o ON v.RETAILER_ID = o.RETAILER_ID
+WHERE 
+    DATE(v.CREATED_AT) = DATE(o.CREATED_AT)
+GROUP BY 
+    v.AGENT_ID;
+
+#Question 4: Organic vs. Inorganic Activations
+WITH FirstOrders AS (
+    SELECT 
+        RETAILER_ID, 
+        MIN(CREATED_AT) AS First_Order_Date
+    FROM 
+        `orders-1`
+    GROUP BY 
+        RETAILER_ID
+)
+SELECT 
+    DATE(fo.First_Order_Date) AS Activation_Date,
+    SUM(CASE 
+        WHEN v.RETAILER_ID IS NOT NULL THEN 1 
+        ELSE 0 
+    END) AS Inorganic_Activations,
+    SUM(CASE 
+        WHEN v.RETAILER_ID IS NULL THEN 1 
+        ELSE 0 
+    END) AS Organic_Activations
+FROM 
+    FirstOrders fo
+LEFT JOIN 
+    `visits-1` v ON fo.RETAILER_ID = v.RETAILER_ID 
+                AND DATE(fo.First_Order_Date) = DATE(v.CREATED_AT)
+GROUP BY 
+    DATE(fo.First_Order_Date);
+#Question 5: Calculate Retention Rate Per Month
+-- Calculate first order month for each retailer
+WITH FirstOrders AS (
+    SELECT 
+        RETAILER_ID, 
+        DATE_FORMAT(MIN(CREATED_AT), '%Y-%m') AS First_Order_Month
+    FROM 
+        `orders-1`
+    GROUP BY 
+        RETAILER_ID
+),
+-- Count unique retailers per month
+MonthlyRetailers AS (
+    SELECT 
+        DATE_FORMAT(CREATED_AT, '%Y-%m') AS Order_Month,
+        COUNT(DISTINCT RETAILER_ID) AS Total_Retailers
+    FROM 
+        `orders-1`
+    GROUP BY 
+        DATE_FORMAT(CREATED_AT, '%Y-%m')
+),
+-- Identify retained retailers by comparing first and next month's orders
+RetainedRetailers AS (
+    SELECT 
+        DATE_FORMAT(o1.CREATED_AT, '%Y-%m') AS Current_Month,
+        COUNT(DISTINCT o1.RETAILER_ID) AS Retained
+    FROM 
+        `orders-1` o1
+    JOIN 
+        FirstOrders fo ON o1.RETAILER_ID = fo.RETAILER_ID
+    JOIN 
+        `orders-1` o2 ON fo.RETAILER_ID = o2.RETAILER_ID
+                    AND DATE_FORMAT(DATE_ADD(STR_TO_DATE(CONCAT(fo.First_Order_Month, '-01'), '%Y-%m-%d'), INTERVAL 1 MONTH), '%Y-%m') = DATE_FORMAT(o2.CREATED_AT, '%Y-%m')
+    GROUP BY 
+        DATE_FORMAT(o1.CREATED_AT, '%Y-%m')
+)
+-- Calculate retention rate
+SELECT 
+    rm.Current_Month, 
+    rm.Retained, 
+    mr.Total_Retailers,
+    (rm.Retained / mr.Total_Retailers) * 100 AS Retention_Rate
+FROM 
+    RetainedRetailers rm
+JOIN 
+    MonthlyRetailers mr ON rm.Current_Month = mr.Order_Month
+ORDER BY 
+    rm.Current_Month;
+
+#question 6 : Segment Retailers Based on NMV
+
+SELECT 
+    RETAILER_ID, 
+    SUM(NMV) AS Total_NMV,
+    CASE 
+        WHEN SUM(NMV) <= 1000 THEN 'Low'
+        WHEN SUM(NMV) <= 5000 THEN 'Medium'
+        ELSE 'High'
+    END AS Segment
+FROM 
+    `orders-1`
+GROUP BY 
+    RETAILER_ID;
+#question 7: Calculate Time Between Visits Per Agent
+-- Calculate the time difference between consecutive visits
+WITH VisitDifferences AS (
+    SELECT 
+        AGENT_ID, 
+        RETAILER_ID, 
+        CREATED_AT,
+        LEAD(CREATED_AT) OVER (PARTITION BY AGENT_ID ORDER BY CREATED_AT) AS Next_Visit,
+        DATEDIFF(LEAD(CREATED_AT) OVER (PARTITION BY AGENT_ID ORDER BY CREATED_AT), CREATED_AT) AS Days_Between_Visits
+    FROM 
+        `visits-1`
+)
+-- Calculate the average time between visits per agent
+SELECT 
+    AGENT_ID, 
+    AVG(Days_Between_Visits) AS Avg_Days_Between_Visits
+FROM 
+    VisitDifferences
+GROUP BY 
+    AGENT_ID;
+#question 8: Identify Anomalies or Unusual Patterns
+-- Calculate mean and standard deviation of NMV
+WITH Stats AS (
+    SELECT 
+        AVG(NMV) AS Mean_NMV, 
+        STDDEV(NMV) AS StdDev_NMV
+    FROM 
+        `orders-1`
+)
+-- Calculate z-score and identify outliers
+SELECT 
+    o.*, 
+    (o.NMV - s.Mean_NMV) / s.StdDev_NMV AS Z_Score
+FROM 
+    `orders-1` o, Stats s
+WHERE 
+    ABS((o.NMV - s.Mean_NMV) / s.StdDev_NMV) > 3;
+#question 9 : Top Agents Encouraging Future Orders
+WITH FirstOrders AS (
+    SELECT 
+        RETAILER_ID, 
+        MIN(CREATED_AT) AS First_Order_Date
+    FROM 
+        `orders-1`
+    GROUP BY 
+        RETAILER_ID
+),
+FutureOrders AS (
+    SELECT 
+        o.RETAILER_ID, 
+        COUNT(o.ORDER_ID) AS Future_Order_Count
+    FROM 
+        `orders-1` o
+    JOIN 
+        FirstOrders fo ON o.RETAILER_ID = fo.RETAILER_ID 
+                      AND o.CREATED_AT > fo.First_Order_Date
+    GROUP BY 
+        o.RETAILER_ID
+)
+SELECT 
+    v.AGENT_ID, 
+    SUM(f.Future_Order_Count) AS Total_Future_Orders
+FROM 
+    `visits-1` v
+JOIN 
+    FutureOrders f ON v.RETAILER_ID = f.RETAILER_ID
+GROUP BY 
+    v.AGENT_ID
+ORDER BY 
+    Total_Future_Orders DESC;
+#question 10 : Develop a Metric to Assess Agents’ Performance
+-- Calculate Strike Rate
+WITH StrikeRate AS (
+    SELECT 
+        v.AGENT_ID, 
+        COUNT(DISTINCT o.ORDER_ID) AS Total_Orders,
+        COUNT(v.VISIT_ID) AS Total_Visits,
+        (COUNT(DISTINCT o.ORDER_ID) / COUNT(v.VISIT_ID)) AS Strike_Rate
+    FROM 
+        `visits-1` v
+    LEFT JOIN 
+        `orders-1` o ON v.RETAILER_ID = o.RETAILER_ID
+                     AND DATE(v.CREATED_AT) = DATE(o.CREATED_AT)
+    GROUP BY 
+        v.AGENT_ID
+),
+-- Calculate Average Ticket Size
+TicketSize AS (
+    SELECT 
+        v.AGENT_ID, 
+        AVG(o.NMV) AS Average_Ticket_Size
+    FROM 
+        `visits-1` v
+    LEFT JOIN 
+        `orders-1` o ON v.RETAILER_ID = o.RETAILER_ID
+                     AND DATE(v.CREATED_AT) = DATE(o.CREATED_AT)
+    GROUP BY 
+        v.AGENT_ID
+)
+-- Composite Performance Score
+SELECT 
+    sr.AGENT_ID,
+    sr.Strike_Rate,
+    ts.Average_Ticket_Size,
+    (sr.Strike_Rate * 0.4 + ts.Average_Ticket_Size * 0.3) AS Performance_Score
+FROM 
+    StrikeRate sr
+JOIN 
+    TicketSize ts ON sr.AGENT_ID = ts.AGENT_ID
+ORDER BY 
+    Performance_Score DESC;
